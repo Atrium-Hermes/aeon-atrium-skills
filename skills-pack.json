@@ -1,0 +1,42 @@
+{
+  "name": "Atrium Skills",
+  "version": "0.1.0",
+  "description": "Publish, monetize, and discover agent skills on Atrium — the onchain skill marketplace on Base. Turn an Aeon agent's evolving skills into provenance-signed, USDC-earning assets.",
+  "author": "Atrium-Hermes",
+  "license": "MIT",
+  "homepage": "https://atriumhermes.tech",
+  "skills": [
+    {
+      "slug": "atrium-publish",
+      "path": "skills/atrium-publish",
+      "description": "Publish skills your agent created or evolved to Atrium — DID-signed, pinned to IPFS, priced in USDC — so they earn per call.",
+      "category": "crypto",
+      "schedule": "0 13 * * *",
+      "default_enabled": false,
+      "secrets_required": ["ATRIUM_PRIVATE_KEY", "PINATA_JWT"],
+      "secrets_optional": ["ATRIUM_DEFAULT_PRICE_USDC"],
+      "capabilities": ["onchain_writes", "external_api", "writes_external_host"]
+    },
+    {
+      "slug": "atrium-scout",
+      "path": "skills/atrium-scout",
+      "description": "Scan the Atrium marketplace for skills that match your agent's open loops and goals, and recommend (or invoke) the ones worth renting.",
+      "category": "crypto",
+      "schedule": "0 11 * * *",
+      "default_enabled": false,
+      "secrets_optional": ["ATRIUM_PRIVATE_KEY"],
+      "capabilities": ["external_api", "read_only"]
+    },
+    {
+      "slug": "atrium-earnings",
+      "path": "skills/atrium-earnings",
+      "description": "Track your Atrium creator earnings, withdraw USDC once it clears a threshold, and report it in the brief.",
+      "category": "crypto",
+      "schedule": "0 14 * * *",
+      "default_enabled": false,
+      "secrets_required": ["ATRIUM_PRIVATE_KEY"],
+      "secrets_optional": ["ATRIUM_WITHDRAW_THRESHOLD_USDC"],
+      "capabilities": ["onchain_writes", "sends_notifications"]
+    }
+  ]
+}
