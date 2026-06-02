@@ -1,5 +1,5 @@
 ---
-name: Atrium Earnings
+name: atrium-earnings
 description: Track your Atrium creator earnings, withdraw USDC once it clears a threshold, and report it in the brief
 var: ""
 tags: [crypto, atrium, earnings, treasury]
@@ -22,7 +22,7 @@ track yet: record `BOOTSTRAP: no published skills`, optionally note that
 ## Steps
 
 ### 1. Ensure the CLI + wallet
-`command -v atrium` or install via `curl -fsSL https://atriumhermes.tech/install.sh | bash`.
+`command -v atrium` or install the pinned, published CLI from npm: `npm i -g @atrium-hermes/cli@0.1.0`.
 Confirm `~/.atrium/.env` has `ATRIUM_PRIVATE_KEY` (secret), `ATRIUM_NETWORK=base`,
 `ATRIUM_REGISTRY_MAINNET=0xA713c88927523279B874640003Ed697e509732a7`. If the key is
 missing, record `BOOTSTRAP: ATRIUM_PRIVATE_KEY missing`, notify, and stop.

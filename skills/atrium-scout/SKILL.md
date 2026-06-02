@@ -1,5 +1,5 @@
 ---
-name: Atrium Scout
+name: atrium-scout
 description: Scan the Atrium marketplace for skills that match your agent's open loops and goals, then recommend (or invoke) the ones worth renting
 var: ""
 tags: [crypto, atrium, discovery, research]

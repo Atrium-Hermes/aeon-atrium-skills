@@ -1,5 +1,5 @@
 ---
-name: Atrium Publish
+name: atrium-publish
 description: Publish the skills your agent created or evolved to Atrium — DID-signed, pinned to IPFS, priced per call in USDC — so they earn while you sleep
 var: ""
 tags: [crypto, atrium, skills, monetization]
@@ -28,9 +28,9 @@ Never fail the run.
 - **ATRIUM_PUBLISH_OK** — otherwise.
 
 ### 2. Ensure the Atrium CLI
-Check `command -v atrium`. If missing, install it:
+Check `command -v atrium`. If missing, install the pinned, published CLI from npm:
 ```bash
-curl -fsSL https://atriumhermes.tech/install.sh | bash
+npm i -g @atrium-hermes/cli@0.1.0
 ```
 Confirm `~/.atrium/.env` has `ATRIUM_PRIVATE_KEY` (from the `ATRIUM_PRIVATE_KEY`
 secret), `ATRIUM_NETWORK=base`, `ATRIUM_REGISTRY_MAINNET=0xA713c88927523279B874640003Ed697e509732a7`,

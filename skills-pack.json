@@ -30,7 +30,7 @@
     {
       "slug": "atrium-earnings",
       "path": "skills/atrium-earnings",
-      "description": "Track your Atrium creator earnings, withdraw USDC once it clears a threshold, and report it in the brief.",
+      "description": "Track your Atrium creator earnings, withdraw USDC once it clears a threshold, and report it in the brief. Note: runs daily and AUTO-WITHDRAWS to your wallet whenever withdrawable ≥ ATRIUM_WITHDRAW_THRESHOLD_USDC (default 1) — set this env var before enabling to control sweep frequency, or pass `report-only` to skip withdrawal. Withdraw only ever sends to your own wallet.",
       "category": "crypto",
       "schedule": "0 14 * * *",
       "default_enabled": false,

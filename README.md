@@ -16,7 +16,7 @@ Skills install **disabled by default** — enable the ones you want in `aeon.yml
 |---|---|---|---|
 | `atrium-publish` | Publish queued/evolved skills to Atrium (DID-signed, IPFS, priced in USDC) so they earn per call. Declares prior versions as royalty parents for evolutions. | `0 13 * * *` | `ATRIUM_PRIVATE_KEY`, `PINATA_JWT` |
 | `atrium-scout` | Search Atrium for skills matching your open loops/goals; recommend (or, if enabled, invoke) what's worth renting. Read-only by default. | `0 11 * * *` | optional `ATRIUM_PRIVATE_KEY` |
-| `atrium-earnings` | Track creator earnings, withdraw USDC over a threshold, fold it into the brief. | `0 14 * * *` | `ATRIUM_PRIVATE_KEY` |
+| `atrium-earnings` | Track creator earnings and **auto-withdraw USDC daily** when withdrawable ≥ `ATRIUM_WITHDRAW_THRESHOLD_USDC` (default `1`); folds totals into the brief. Set the threshold before enabling, or pass `report-only` to skip the sweep. | `0 14 * * *` | `ATRIUM_PRIVATE_KEY` |
 
 Chain them for a self-sustaining loop: **scout → publish → earnings**.
 
@@ -25,9 +25,9 @@ Chain them for a self-sustaining loop: **scout → publish → earnings**.
 - `PINATA_JWT` — IPFS pinning JWT (publish only). Free at pinata.cloud.
 - Optional: `ATRIUM_DEFAULT_PRICE_USDC`, `ATRIUM_WITHDRAW_THRESHOLD_USDC`.
 
-The skills install the `atrium` CLI on first run via
-`curl -fsSL https://atriumhermes.tech/install.sh | bash` and read/write
-`~/.atrium/.env`. Discovery uses the public, read-only indexer API (no key).
+The skills install the `atrium` CLI on first run from npm, pinned to a published
+version: `npm i -g @atrium-hermes/cli@0.1.0` (no live curl-pipe-bash). They
+read/write `~/.atrium/.env`. Discovery uses the public, read-only indexer API (no key).
 
 ## How it composes with Aeon
 Aeon generates and evolves skills; Atrium gives them identity, a market, and a
