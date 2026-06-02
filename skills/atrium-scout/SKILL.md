@@ -38,10 +38,16 @@ curl -s "https://indexer-production-92e5.up.railway.app/skills?q=<need>&sort=inv
 Collect candidates: `skillId`, `name`, `pricePerCall`, `tags`, `totalInvocations`.
 
 ### 3. Rank + recommend
-Score each candidate by relevance to the need × proven usage (`totalInvocations`) ÷
-price. Keep the best match per need that is genuinely useful (skip weak/irrelevant
-hits). Produce a short table: need → recommended skill, price, why, and the
-one-liner to use it.
+For the top few candidates per need, fetch the full record to read any **onchain
+attestation** (real quality signal):
+```bash
+curl -s "https://indexer-production-92e5.up.railway.app/skills/<skillId>"   # .attestation = { successRate, sampleCount } | null
+```
+Score each candidate by relevance × proven usage (`totalInvocations`) ÷ price, then
+**boost by attested success rate when present** (a skill with a high attested
+`successRate` over a real `sampleCount` outranks an unattested one at similar usage).
+Keep the best match per need that is genuinely useful (skip weak/irrelevant hits).
+Produce a short table: need → recommended skill, price, attested quality (if any), why.
 
 ### 4. Optionally queue a rental (only if enabled)
 If `scout-config.md` has `auto_invoke: true` AND a candidate's `pricePerCall` ≤

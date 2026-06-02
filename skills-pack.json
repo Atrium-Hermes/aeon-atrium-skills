@@ -37,6 +37,16 @@
       "secrets_required": ["ATRIUM_PRIVATE_KEY"],
       "secrets_optional": ["ATRIUM_WITHDRAW_THRESHOLD_USDC"],
       "capabilities": ["onchain_writes", "sends_notifications"]
+    },
+    {
+      "slug": "atrium-attest",
+      "path": "skills/atrium-attest",
+      "description": "Turn this agent's real 1-5 run-quality scores into onchain Atrium benchmark attestations for the skills it published — a reputation signal the marketplace can rank by. Queues the attestation; the spend/tx runs in scripts/postprocess-atrium.sh (key stays out of the model step).",
+      "category": "crypto",
+      "schedule": "0 15 * * 1",
+      "default_enabled": false,
+      "secrets_required": ["ATRIUM_PRIVATE_KEY"],
+      "capabilities": ["onchain_writes"]
     }
   ]
 }
