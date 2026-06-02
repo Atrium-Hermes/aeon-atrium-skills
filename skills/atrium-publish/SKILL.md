@@ -24,7 +24,7 @@ Never fail the run.
 ## Steps
 
 ### 1. Detect mode
-- **ATRIUM_PUBLISH_NO_QUEUE** — if `memory/atrium/publish-queue.md` is missing or empty AND no `${var}` was given. Do not publish. Instead, scan recent logs + `skills/*/SKILL.md` for stable, reusable skills and propose 3–5 good publish candidates (slug + a one-line why + a suggested price), tell the operator how to queue them (append to `memory/atrium/publish-queue.md`), and stop.
+- **ATRIUM_PUBLISH_NO_QUEUE** — if `memory/atrium/publish-queue.md` is missing or empty AND no `var` input was given. Do not publish. Instead, scan recent logs + `skills/*/SKILL.md` for stable, reusable skills and propose 3–5 good publish candidates (slug + a one-line why + a suggested price), tell the operator how to queue them (append to `memory/atrium/publish-queue.md`), and stop.
 - **ATRIUM_PUBLISH_OK** — otherwise.
 
 ### 2. Ensure the Atrium CLI
@@ -39,7 +39,7 @@ and `PINATA_JWT` (from the `PINATA_JWT` secret). Write any missing values. If
 notify the operator, and stop (do not invent keys).
 
 ### 3. Build the publish set
-For each queue line (or `${var}`), resolve the target skill folder. Skip any slug
+For each queue line (or the `var` input), resolve the target skill folder. Skip any slug
 already in `published.json` whose source is unchanged (compare a content hash of
 its `SKILL.md`). For each remaining target, produce a valid Atrium `skill.md`:
 - frontmatter: `name`, `version` (bump if re-publishing an evolved version),

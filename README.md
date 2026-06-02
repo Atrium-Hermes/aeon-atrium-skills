@@ -29,6 +29,22 @@ The skills install the `atrium` CLI on first run from npm, pinned to a published
 version: `npm i -g @atrium-hermes/cli@0.1.0` (no live curl-pipe-bash). They
 read/write `~/.atrium/.env`. Discovery uses the public, read-only indexer API (no key).
 
+## Spending: the post-process step (required for renting)
+
+Aeon keeps secrets **out of the Claude/model step**, so a skill cannot spend
+(`atrium invoke`) inline. `atrium-scout` **queues** its top pick to
+`.pending-atrium/<slug>.json`, and the spend happens afterwards in
+**`scripts/postprocess-atrium.sh`** (Aeon auto-runs `scripts/postprocess-*.sh` after
+Claude, with full env). One-time setup: (1) copy `scripts/postprocess-atrium.sh` into
+your Aeon repo; (2) add to the post-process step env in `.github/workflows/aeon.yml`
+(NOT the Claude step):
+
+```yaml
+ATRIUM_PRIVATE_KEY: ${{ secrets.ATRIUM_PRIVATE_KEY }}
+```
+
+Then set `auto_invoke: true` in `memory/atrium/scout-config.md` once the wallet is funded.
+
 ## How it composes with Aeon
 Aeon generates and evolves skills; Atrium gives them identity, a market, and a
 revenue line. `atrium-publish` is the "earn from what you learn" loop — every stable

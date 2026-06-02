@@ -25,8 +25,8 @@ Read `memory/atrium/scout-config.md` if present (`auto_invoke: true|false`, `max
 
 ### 1. Build the need list
 From the sources above, extract a deduped list of concrete capability needs (e.g.
-"parse PDF tables", "review a PR", "summarize a thread"). Cap at 15. If `${var}` is
-set, prioritize needs touching it. If there are zero needs, switch to
+"parse PDF tables", "review a PR", "summarize a thread"). Cap at 15. If a `var`
+focus was given, prioritize needs touching it. If there are zero needs, switch to
 **ATRIUM_SCOUT_BROWSE** mode: just surface the marketplace's top + newest skills as
 inspiration, then stop.
 
@@ -43,15 +43,18 @@ price. Keep the best match per need that is genuinely useful (skip weak/irreleva
 hits). Produce a short table: need → recommended skill, price, why, and the
 one-liner to use it.
 
-### 4. Optionally invoke (only if enabled)
+### 4. Optionally queue a rental (only if enabled)
 If `scout-config.md` has `auto_invoke: true` AND a candidate's `pricePerCall` ≤
-`max_price_usdc` AND `ATRIUM_PRIVATE_KEY` is set: invoke the single highest-value
-match to unblock an active loop —
-```bash
-atrium invoke <skillId> --network base    # (install via curl|bash if `atrium` is missing)
+`max_price_usdc`: **queue** the single highest-value match by writing
+`.pending-atrium/<slug>.json`:
+```json
+{ "skillId": "0x...", "slug": "<slug>", "price": "0.1", "network": "base" }
 ```
-then fetch the body and stash it under `memory/atrium/rented/<slug>.md` for the
-relevant loop. Cap at ONE auto-invoke per run. Otherwise, recommend only.
+**Do NOT invoke here.** Aeon keeps the wallet key out of this (model) step, so
+spending inline always fails. The companion `scripts/postprocess-atrium.sh` runs
+after the agent — where `ATRIUM_PRIVATE_KEY` is available — and performs the actual
+on-chain `atrium invoke`, then stashes the body under `memory/atrium/rented/<slug>.md`.
+Queue at most ONE rental per run. Otherwise, recommend only.
 
 ### 5. Notify
 Send the operator the ranked recommendations (need → skill → price → why), plus any

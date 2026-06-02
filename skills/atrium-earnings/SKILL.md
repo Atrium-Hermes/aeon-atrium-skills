@@ -40,7 +40,7 @@ since the previous run).
 
 ### 3. Withdraw (unless report-only)
 Let `T = ATRIUM_WITHDRAW_THRESHOLD_USDC` (default `1`). If withdrawable ≥ `T` and
-`${var}` ≠ `report-only`:
+the `var` input is not `report-only`:
 ```bash
 atrium withdraw --network base
 ```
