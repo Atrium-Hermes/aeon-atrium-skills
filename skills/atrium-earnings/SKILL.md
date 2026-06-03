@@ -21,39 +21,44 @@ track yet: record `BOOTSTRAP: no published skills`, optionally note that
 
 ## Steps
 
-### 1. Ensure the CLI + wallet
-`command -v atrium` or install the pinned, published CLI from npm: `npm i -g @atrium-hermes/cli@0.1.0`.
-Confirm `~/.atrium/.env` has `ATRIUM_PRIVATE_KEY` (secret), `ATRIUM_NETWORK=base`,
-`ATRIUM_REGISTRY_MAINNET=0xA713c88927523279B874640003Ed697e509732a7`. If the key is
-missing, record `BOOTSTRAP: ATRIUM_PRIVATE_KEY missing`, notify, and stop.
+### 1. Report from the indexer — no key in this step
+Aeon keeps `ATRIUM_PRIVATE_KEY` **out of this (model) step**, so anything that reads
+the wallet (`atrium balance`) or spends (`atrium withdraw`) can't run inline here. Use
+the **indexer** for all reporting (no key needed); the actual sweep is queued for
+post-process. Don't look for the key here and don't fail if it's absent.
 
-### 2. Read earnings
-```bash
-atrium balance        # shows withdrawable USDC for your wallet
-```
-Also pull per-skill totals for your published skillIds from the indexer:
+### 2. Read earnings (indexer only)
+Pull per-skill totals + lifetime earned for your published skillIds from the indexer
+(`<your-address>` = the wallet on your `published.json` entries / the operator address):
 ```bash
 curl -s "https://indexer-production-92e5.up.railway.app/creators/<your-address>/earnings"
 ```
 Compute the delta vs the last entry in `earnings.json` (new invocations + new USDC
-since the previous run).
+since the previous run). Withdrawable-but-unswept balance is read in post-process
+(where the key lives) — report lifetime `totalEarned` from the indexer here.
 
-### 3. Withdraw (unless report-only)
-Let `T = ATRIUM_WITHDRAW_THRESHOLD_USDC` (default `1`). If withdrawable ≥ `T` and
-the `var` input is not `report-only`:
-```bash
-atrium withdraw --network base
+### 3. Queue the withdraw (unless report-only)
+Unless the `var` input is `report-only`, **queue** a sweep by writing
+`.pending-atrium-earnings/withdraw.json`:
+```json
+{ "network": "base", "threshold": "1" }
 ```
-Capture the tx hash. Gas on Base is sub-cent, so a low threshold is fine. On revert
-(`NothingToWithdraw`), skip silently.
+(`threshold` = `ATRIUM_WITHDRAW_THRESHOLD_USDC`, default `1`.) **Do NOT run
+`atrium withdraw` here.** `scripts/postprocess-atrium.sh` runs after the agent, reads
+the on-chain withdrawable, and — if it's ≥ `threshold` — sweeps it (gas on Base is
+sub-cent; `withdraw` no-ops on a zero balance), recording the tx to `earnings.json`.
 
 ### 4. Record + notify
-Append today's `{ date, withdrawable, withdrawnTotal, bySkill }` to
-`memory/atrium/earnings.json` and a dated line to `memory/logs/`. Notify the
-operator with: total earned to date, new USDC since last run, top-earning skill,
-and any withdrawal tx. Keep it to a few lines — this is brief material, not a wall
-of text.
+Append a dated line to `memory/logs/` and the indexer-derived report (lifetime
+`totalEarned`, new USDC since last run, `bySkill`) to your brief. The withdraw entry
+(`{ date, withdrawn, tx }`) is appended to `memory/atrium/earnings.json` by
+post-process when a sweep happens, so don't duplicate it here. Notify the operator
+with: total earned to date, new USDC since last run, top-earning skill, and a note
+that any due sweep runs in post-process. Keep it to a few lines — brief material,
+not a wall of text.
 
 ## Notes
 - Run after `atrium-publish` in a chain for a clean publish → earn → sweep loop.
 - `withdraw()` only ever sends to your own wallet; one user's revert can't block it.
+- The sweep happens in `scripts/postprocess-atrium.sh` (post-process step), where the
+  wallet key is available — same pattern as `atrium-scout` and `atrium-publish`.

@@ -68,24 +68,35 @@ read/write `~/.atrium/.env`. Discovery uses the public, read-only indexer API (n
 ## Spending: the post-process step (required for renting)
 
 Aeon deliberately keeps secrets **out of the Claude/model step**, so a skill cannot
-spend (`atrium invoke`) inline — the wallet key isn't there. `atrium-scout` therefore
-**queues** its top pick to `.pending-atrium/<slug>.json`, and the actual on-chain
-spend happens afterwards in **`scripts/postprocess-atrium.sh`** (Aeon auto-runs
-`scripts/postprocess-*.sh` after Claude, with full env). Two one-time setup steps:
+spend (`atrium invoke`/`publish`/`withdraw`) inline — the wallet key isn't there. Every
+spending skill therefore **queues** its intent during the model step, and the actual
+on-chain action happens afterwards in **`scripts/postprocess-atrium.sh`** (Aeon
+auto-runs `scripts/postprocess-*.sh` after Claude, with full env). One script handles
+all four queues:
+
+| Skill | Queues to | Post-process does |
+|---|---|---|
+| `atrium-scout` | `.pending-atrium/<slug>.json` | `atrium invoke` (one rental/run, honours `auto_invoke` + `max_price_usdc`) |
+| `atrium-publish` | `.pending-atrium-publish/<slug>.json` (+ staged `skill.md`) | `atrium publish` → records to `published.json` |
+| `atrium-earnings` | `.pending-atrium-earnings/withdraw.json` | `atrium withdraw` if withdrawable ≥ `threshold` → records to `earnings.json` |
+| `atrium-attest` | `.pending-atrium-attest/<id>.json` | `atrium attest` (tx-only, gas) → records to `attested.json` |
+
+Two one-time setup steps:
 
 1. **Copy the script** `scripts/postprocess-atrium.sh` (shipped in this pack) into your
    Aeon repo at the same path. It no-ops when no key is set (report-only), honours
-   `auto_invoke` + `max_price_usdc`, and rents at most one skill per run.
-2. **Wire the key into the post-process step** in `.github/workflows/aeon.yml` — add to
-   that step's `env:` (NOT the Claude step):
+   `auto_invoke` + `max_price_usdc`, rents at most one skill per run, and is safe to
+   re-run (each queue dir is drained idempotently).
+2. **Wire the secrets into the post-process step** in `.github/workflows/aeon.yml` — add
+   to that step's `env:` (NOT the Claude step):
    ```yaml
    ATRIUM_PRIVATE_KEY: ${{ secrets.ATRIUM_PRIVATE_KEY }}
-   # PINATA_JWT: ${{ secrets.PINATA_JWT }}   # also, if you publish
+   PINATA_JWT: ${{ secrets.PINATA_JWT }}   # required if you publish
    ```
 
 Then set `auto_invoke: true` in `memory/atrium/scout-config.md` once the wallet is
-funded. (`atrium-publish` / `atrium-earnings` also spend on-chain and want the same
-post-process treatment — moving their spend into post-process scripts is the same pattern.)
+funded. (`atrium-publish` and `atrium-earnings` now spend via this same post-process
+path — they only stage + queue in the model step.)
 
 ## How it composes with Aeon
 Aeon generates and evolves skills; Atrium gives them identity, a market, and a
@@ -179,40 +190,48 @@ PENDING_DIR=".pending-atrium"
 RENTED_DIR="memory/atrium/rented"
 CONFIG="memory/atrium/scout-config.md"
 
-[ -d "$PENDING_DIR" ] && ls -A "$PENDING_DIR"/*.json >/dev/null 2>&1 || { echo "atrium-postprocess: no pending requests"; exit 0; }
+# No key -> report-only no-op for every block below (invoke/publish/withdraw/attest all
+# need the wallet). This is the ONLY global early-exit; per-queue guards follow so an
+# empty rental queue never blocks publish/withdraw/attest (they're independent skills).
 [ -n "${ATRIUM_PRIVATE_KEY:-}" ] || { echo "atrium-postprocess: ATRIUM_PRIVATE_KEY not set, skipping (report-only)"; exit 0; }
 
-AUTO_INVOKE="false"; MAX_PRICE="0"
-if [ -f "$CONFIG" ]; then
-  AUTO_INVOKE=$(grep -E '^auto_invoke:' "$CONFIG" | head -1 | sed -E 's/^auto_invoke:[[:space:]]*//; s/[[:space:]]*#.*//' || echo false)
-  MAX_PRICE=$(grep -E '^max_price_usdc:' "$CONFIG" | head -1 | sed -E 's/^max_price_usdc:[[:space:]]*//; s/[[:space:]]*#.*//' || echo 0)
-fi
-[ "$AUTO_INVOKE" = "true" ] || { echo "atrium-postprocess: auto_invoke is '$AUTO_INVOKE', not renting"; exit 0; }
-
+# Ensure the CLI once — all four queue blocks use it.
 command -v atrium >/dev/null 2>&1 || { echo "atrium-postprocess: installing atrium CLI..."; npm install -g @atrium-hermes/cli >/dev/null 2>&1 || { echo "atrium-postprocess: CLI install failed"; exit 0; }; }
 
-mkdir -p "$RENTED_DIR"
-for req in "$PENDING_DIR"/*.json; do
-  [ -f "$req" ] || continue
-  SKILL_ID=$(jq -r '.skillId // empty' "$req"); SLUG=$(jq -r '.slug // empty' "$req")
-  PRICE=$(jq -r '.price // "0"' "$req"); NETWORK=$(jq -r '.network // "base"' "$req")
-  [ -n "$SKILL_ID" ] && [ -n "$SLUG" ] || { echo "atrium-postprocess: bad request $(basename "$req"), skipping"; continue; }
-  [ -f "$RENTED_DIR/$SLUG.md" ] && { echo "atrium-postprocess: $SLUG already rented"; rm -f "$req"; continue; }
-  awk -v p="$PRICE" -v c="$MAX_PRICE" 'BEGIN{exit !(p+0 > c+0)}' && { echo "atrium-postprocess: $SLUG price $PRICE > cap $MAX_PRICE, skipping"; continue; }
+# ── Rentals queued by atrium-scout (.pending-atrium/<slug>.json) ──
+if [ -d "$PENDING_DIR" ] && ls -A "$PENDING_DIR"/*.json >/dev/null 2>&1; then
+  AUTO_INVOKE="false"; MAX_PRICE="0"
+  if [ -f "$CONFIG" ]; then
+    AUTO_INVOKE=$(grep -E '^auto_invoke:' "$CONFIG" | head -1 | sed -E 's/^auto_invoke:[[:space:]]*//; s/[[:space:]]*#.*//' || echo false)
+    MAX_PRICE=$(grep -E '^max_price_usdc:' "$CONFIG" | head -1 | sed -E 's/^max_price_usdc:[[:space:]]*//; s/[[:space:]]*#.*//' || echo 0)
+  fi
+  if [ "$AUTO_INVOKE" != "true" ]; then
+    echo "atrium-postprocess: auto_invoke is '$AUTO_INVOKE', not renting"
+  else
+    mkdir -p "$RENTED_DIR"
+    for req in "$PENDING_DIR"/*.json; do
+      [ -f "$req" ] || continue
+      SKILL_ID=$(jq -r '.skillId // empty' "$req"); SLUG=$(jq -r '.slug // empty' "$req")
+      PRICE=$(jq -r '.price // "0"' "$req"); NETWORK=$(jq -r '.network // "base"' "$req")
+      [ -n "$SKILL_ID" ] && [ -n "$SLUG" ] || { echo "atrium-postprocess: bad request $(basename "$req"), skipping"; continue; }
+      [ -f "$RENTED_DIR/$SLUG.md" ] && { echo "atrium-postprocess: $SLUG already rented"; rm -f "$req"; continue; }
+      awk -v p="$PRICE" -v c="$MAX_PRICE" 'BEGIN{exit !(p+0 > c+0)}' && { echo "atrium-postprocess: $SLUG price $PRICE > cap $MAX_PRICE, skipping"; continue; }
 
-  echo "atrium-postprocess: invoking $SLUG ($SKILL_ID) at \$$PRICE on $NETWORK..."
-  # Balance/allowance are enforced on-chain by invoke (it reverts if short), so we
-  # don't pre-gate on `atrium balance` (its non-zero exit must never block a funded wallet).
-  atrium balance --network "$NETWORK" 2>/dev/null || echo "atrium-postprocess: balance query unavailable, proceeding (invoke enforces funds on-chain)"
-  OUT=$(atrium invoke "$SKILL_ID" --network "$NETWORK" 2>&1) || { echo "atrium-postprocess: invoke failed for $SLUG:"; echo "$OUT"; continue; }
-  echo "$OUT"
-  TX=$(echo "$OUT" | grep -oE '0x[a-fA-F0-9]{64}' | head -1 || echo "")
-  BODY=$(atrium fetch "$SKILL_ID" --network "$NETWORK" 2>/dev/null || echo "")
-  { echo "# $SLUG (rented from Atrium)"; echo; echo "- skillId: \`$SKILL_ID\`"; echo "- price: \$$PRICE USDC"; echo "- tx: ${TX:-see run logs}"; echo; echo "---"; echo; echo "$BODY"; } > "$RENTED_DIR/$SLUG.md"
-  echo "atrium-postprocess: saved body to $RENTED_DIR/$SLUG.md"
-  rm -f "$req"
-  break   # one rental per run
-done
+      echo "atrium-postprocess: invoking $SLUG ($SKILL_ID) at \$$PRICE on $NETWORK..."
+      # Balance/allowance are enforced on-chain by invoke (it reverts if short), so we
+      # don't pre-gate on `atrium balance` (its non-zero exit must never block a funded wallet).
+      atrium balance --network "$NETWORK" 2>/dev/null || echo "atrium-postprocess: balance query unavailable, proceeding (invoke enforces funds on-chain)"
+      OUT=$(atrium invoke "$SKILL_ID" --network "$NETWORK" 2>&1) || { echo "atrium-postprocess: invoke failed for $SLUG:"; echo "$OUT"; continue; }
+      echo "$OUT"
+      TX=$(echo "$OUT" | grep -oE '0x[a-fA-F0-9]{64}' | head -1 || echo "")
+      BODY=$(atrium fetch "$SKILL_ID" --network "$NETWORK" 2>/dev/null || echo "")
+      { echo "# $SLUG (rented from Atrium)"; echo; echo "- skillId: \`$SKILL_ID\`"; echo "- price: \$$PRICE USDC"; echo "- tx: ${TX:-see run logs}"; echo; echo "---"; echo; echo "$BODY"; } > "$RENTED_DIR/$SLUG.md"
+      echo "atrium-postprocess: saved body to $RENTED_DIR/$SLUG.md"
+      rm -f "$req"
+      break   # one rental per run
+    done
+  fi
+fi
 
 # ── Reputation attestations queued by atrium-attest (.pending-atrium-attest/*.json) ──
 # These are tx-only (no USDC spend) but need ETH for gas; safe to run unconditionally.
@@ -235,6 +254,62 @@ if [ -d "$ATTEST_DIR" ] && ls -A "$ATTEST_DIR"/*.json >/dev/null 2>&1; then
       '.[$id] = {successRate:$r, sampleCount:$s, at:$at}' "$ATTESTED" > "$ATTESTED.tmp" && mv "$ATTESTED.tmp" "$ATTESTED"
     rm -f "$req"
   done
+fi
+
+# ── Publish requests queued by atrium-publish (.pending-atrium-publish/<slug>.json) ──
+# Each request points at a staged skill dir (containing skill.md) the Claude step
+# prepared. Publishing registers the skill on-chain (gas) AND pins to IPFS, so it needs
+# both ATRIUM_PRIVATE_KEY and PINATA_JWT — neither is in the Claude step. `atrium publish`
+# overwrites author_did to the local identity, so the staged manifest needs no DID.
+PUB_DIR=".pending-atrium-publish"; PUBLISHED="memory/atrium/published.json"
+if [ -d "$PUB_DIR" ] && ls -A "$PUB_DIR"/*.json >/dev/null 2>&1; then
+  [ -f "$PUBLISHED" ] && jq empty "$PUBLISHED" 2>/dev/null || echo '{}' > "$PUBLISHED"
+  for req in "$PUB_DIR"/*.json; do
+    [ -f "$req" ] || continue
+    SLUG=$(jq -r '.slug // empty' "$req"); SKPATH=$(jq -r '.path // empty' "$req")
+    PRICE=$(jq -r '.price // "0.005"' "$req"); NETWORK=$(jq -r '.network // "base"' "$req")
+    [ -n "$SLUG" ] && [ -n "$SKPATH" ] && [ -d "$SKPATH" ] || { echo "atrium-postprocess: bad publish request $(basename "$req"), skipping"; rm -f "$req"; continue; }
+    jq -e --arg s "$SLUG" '.[$s].skillId // empty | select(length>0)' "$PUBLISHED" >/dev/null 2>&1 && { echo "atrium-postprocess: $SLUG already published"; rm -f "$req"; continue; }
+    echo "atrium-postprocess: publishing $SLUG from $SKPATH at \$$PRICE on $NETWORK..."
+    OUT=$(atrium publish "$SKPATH" --network "$NETWORK" 2>&1) || { echo "atrium-postprocess: publish failed for $SLUG:"; echo "$OUT"; continue; }
+    echo "$OUT"
+    # Output labels (atrium publish): "Skill ID: 0x..", "IPFS CID: baf..", "Tx: 0x.."
+    SKILL_ID=$(echo "$OUT" | grep -i 'Skill ID' | grep -oE '0x[a-fA-F0-9]{64}' | head -1 || echo "")
+    CID=$(echo "$OUT" | grep -i 'IPFS CID' | grep -oE 'baf[a-z0-9]+' | head -1 || echo "")
+    TX=$(echo "$OUT" | grep -iE '^[[:space:]]*Tx:' | grep -oE '0x[a-fA-F0-9]{64}' | head -1 || echo "")
+    [ -n "$SKILL_ID" ] || { echo "atrium-postprocess: $SLUG published but skillId not parsed — leaving request for retry"; continue; }
+    jq --arg s "$SLUG" --arg id "$SKILL_ID" --arg cid "$CID" --arg tx "$TX" --arg p "$PRICE" --arg at "$(date -u +%FT%TZ)" \
+      '.[$s] = {skillId:$id, cid:$cid, tx:$tx, price:$p, at:$at}' "$PUBLISHED" > "$PUBLISHED.tmp" && mv "$PUBLISHED.tmp" "$PUBLISHED"
+    echo "atrium-postprocess: recorded $SLUG -> $SKILL_ID"
+    rm -f "$req"
+  done
+fi
+
+# ── Withdraw queued by atrium-earnings (.pending-atrium-earnings/withdraw.json) ──
+# Sweeping creator USDC is a tx (needs the key). `atrium withdraw` self-gates: it no-ops
+# on a zero balance. We additionally honour a USDC threshold (don't bother below it).
+WD_REQ=".pending-atrium-earnings/withdraw.json"; EARNINGS="memory/atrium/earnings.json"
+if [ -f "$WD_REQ" ]; then
+  NETWORK=$(jq -r '.network // "base"' "$WD_REQ"); THRESH=$(jq -r '.threshold // "1"' "$WD_REQ")
+  OWED=$(atrium balance --network "$NETWORK" 2>/dev/null | grep -i 'Withdrawable' | grep -oE '[0-9]+\.?[0-9]*' | head -1 || echo "")
+  if [ -z "$OWED" ]; then
+    echo "atrium-postprocess: could not read withdrawable (no key / RPC?), skipping withdraw"
+  elif awk -v o="$OWED" -v t="$THRESH" 'BEGIN{exit !(o+0 >= t+0)}'; then
+    echo "atrium-postprocess: withdrawable \$$OWED >= threshold \$$THRESH on $NETWORK, withdrawing..."
+    OUT=$(atrium withdraw --network "$NETWORK" 2>&1) || { echo "atrium-postprocess: withdraw failed:"; echo "$OUT"; OUT=""; }
+    echo "$OUT"
+    TX=$(echo "$OUT" | grep -i 'Withdrew' | grep -oE '0x[a-fA-F0-9]{64}' | head -1 || echo "")
+    if [ -n "$TX" ]; then
+      [ -f "$EARNINGS" ] && jq -e 'type=="array"' "$EARNINGS" >/dev/null 2>&1 || echo '[]' > "$EARNINGS"
+      jq --arg w "$OWED" --arg tx "$TX" --arg at "$(date -u +%FT%TZ)" \
+        '. += [{date:$at, withdrawn:$w, tx:$tx}]' "$EARNINGS" > "$EARNINGS.tmp" && mv "$EARNINGS.tmp" "$EARNINGS"
+      echo "atrium-postprocess: swept \$$OWED -> $TX"
+      rm -f "$WD_REQ"
+    fi
+  else
+    echo "atrium-postprocess: withdrawable \$$OWED < threshold \$$THRESH, leaving for next run"
+    rm -f "$WD_REQ"
+  fi
 fi
 echo "atrium-postprocess: done"
 ATRIUM_SYNC_EOF_3
@@ -269,23 +344,22 @@ Never fail the run.
 - **ATRIUM_PUBLISH_NO_QUEUE** — if `memory/atrium/publish-queue.md` is missing or empty AND no `var` input was given. Do not publish. Instead, scan recent logs + `skills/*/SKILL.md` for stable, reusable skills and propose 3–5 good publish candidates (slug + a one-line why + a suggested price), tell the operator how to queue them (append to `memory/atrium/publish-queue.md`), and stop.
 - **ATRIUM_PUBLISH_OK** — otherwise.
 
-### 2. Ensure the Atrium CLI
-Check `command -v atrium`. If missing, install the pinned, published CLI from npm:
-```bash
-npm i -g @atrium-hermes/cli@0.1.0
-```
-Confirm `~/.atrium/.env` has `ATRIUM_PRIVATE_KEY` (from the `ATRIUM_PRIVATE_KEY`
-secret), `ATRIUM_NETWORK=base`, `ATRIUM_REGISTRY_MAINNET=0xA713c88927523279B874640003Ed697e509732a7`,
-and `PINATA_JWT` (from the `PINATA_JWT` secret). Write any missing values. If
-`ATRIUM_PRIVATE_KEY` or `PINATA_JWT` is unset, record `BOOTSTRAP: secrets missing`,
-notify the operator, and stop (do not invent keys).
+### 2. Prepare only — do NOT spend in this step
+Aeon keeps the wallet key (`ATRIUM_PRIVATE_KEY`) and `PINATA_JWT` **out of this
+(model) step** by design, so `atrium publish` — which pins to IPFS *and* registers
+on-chain — can never run inline here. This step **stages + queues**; the companion
+`scripts/postprocess-atrium.sh` (which Aeon runs after the agent, with full env) does
+the actual publish. Do not look for the secrets here and do not fail if they're
+absent — just prepare the skill files and queue them.
 
 ### 3. Build the publish set
 For each queue line (or the `var` input), resolve the target skill folder. Skip any slug
-already in `published.json` whose source is unchanged (compare a content hash of
-its `SKILL.md`). For each remaining target, produce a valid Atrium `skill.md`:
+already in `published.json` (entry with a non-empty `skillId`) whose source is unchanged
+(compare a content hash of its `SKILL.md`). For each remaining target, produce a valid
+Atrium `skill.md`:
 - frontmatter: `name`, `version` (bump if re-publishing an evolved version),
-  `author_did` (from `atrium init`), `description` (1–3 sentences),
+  `author_did: ''` (leave blank — `atrium publish` fills it from the wallet identity in
+  post-process; never invent a DID), `description` (1–3 sentences),
   `tags`, `categories`, `language: en`, `runtime: prompt-only`,
   `price_per_call_usdc` (queue value, or `ATRIUM_DEFAULT_PRICE_USDC`, else `'0.005'`; must be > 0 and ≤ 50),
   `parent_skills: []` (or the prior version's skillId with a royalty if this is an evolution — see step 5),
@@ -293,13 +367,18 @@ its `SKILL.md`). For each remaining target, produce a valid Atrium `skill.md`:
 - body: the skill's actual instructions/prompt, cleaned for a third party (no secrets,
   no operator-specific paths). Never include "imported/scraped from" lines.
 
-### 4. Publish
-For each prepared skill:
-```bash
-atrium publish <path-to-skill-dir> --network base
-```
-Capture the `Skill ID`, `IPFS CID`, and `Tx`. On revert (`ZeroPrice`, `SkillExists`,
-insufficient gas), log the reason and continue with the rest — never abort the batch.
+### 4. Stage + queue (do NOT publish here)
+For each prepared skill, write its `skill.md` into a staging dir and **queue** it for
+post-process — do **not** run `atrium publish` (no key/JWT in this step):
+- write the manifest to `.pending-atrium-publish/<slug>/skill.md`
+- write a request `.pending-atrium-publish/<slug>.json`:
+  ```json
+  { "slug": "<slug>", "path": ".pending-atrium-publish/<slug>", "price": "0.005", "network": "base" }
+  ```
+`scripts/postprocess-atrium.sh` then runs `atrium publish <path> --network <network>`
+with the key present, captures `Skill ID` / `IPFS CID` / `Tx`, and records each result
+to `memory/atrium/published.json` (skipping reverts like `ZeroPrice` / `SkillExists`).
+Queue every opted-in skill; one publish per request, the script processes the batch.
 
 ### 5. Royalty lineage (evolutions)
 If this is a newer version of a skill already in `published.json`, declare the prior
@@ -308,10 +387,11 @@ so the lineage of an evolving skill is preserved and the prior version earns. Ke
 combined parent royalties ≤ 50%.
 
 ### 6. Record + notify
-Append each result to `memory/atrium/published.json`. Append a dated line to
-`memory/logs/`. Notify the operator: how many skills published, their names +
-skillIds + a Basescan/atriumhermes.tech link, and the prices set. If nothing was
-published (all duplicates), say so briefly.
+The on-chain write + `published.json` append happen in post-process (where the key
+is). In this step, append a dated line to `memory/logs/` listing what was **queued**
+(slugs + prices), and notify the operator: how many skills were staged for publish and
+that the post-process step will register them this run. If nothing was queued (all
+duplicates), say so briefly.
 
 ## Notes
 - This is the "earn from what you learn" loop: pair it with Aeon's self-improve so
@@ -361,16 +441,22 @@ curl -s "https://indexer-production-92e5.up.railway.app/skills?q=<need>&sort=inv
 Collect candidates: `skillId`, `name`, `pricePerCall`, `tags`, `totalInvocations`.
 
 ### 3. Rank + recommend
-For the top few candidates per need, fetch the full record to read any **onchain
-attestation** (real quality signal):
+For the top few candidates per need, fetch the full record to read its **quality
+signals**:
 ```bash
-curl -s "https://indexer-production-92e5.up.railway.app/skills/<skillId>"   # .attestation = { successRate, sampleCount } | null
+curl -s "https://indexer-production-92e5.up.railway.app/skills/<skillId>"
+  # .stakeAttestation = { rateBps, totalStake, attestationCount }  ← STRONGEST: a stake-weighted
+  #                       success rate with $ATRIUM bonded behind it, slashable if false (sybil-resistant)
+  # .attestation      = { successRate, sampleCount } | null         ← weaker: an unbacked claim anyone can post
 ```
-Score each candidate by relevance × proven usage (`totalInvocations`) ÷ price, then
-**boost by attested success rate when present** (a skill with a high attested
-`successRate` over a real `sampleCount` outranks an unattested one at similar usage).
+Rank each candidate by relevance, then by quality in this order:
+1. **Stake-backed rate** — a high `stakeAttestation.rateBps` with real `totalStake` bonded
+   beats everything; the more $ATRIUM staked, the more trustworthy the number (it's
+   slashable). `$ATRIUM` is 18-decimal — divide `totalStake` by 1e18 for the human amount.
+2. **Plain attested** `successRate` over a real `sampleCount` (a signal, but unbacked).
+3. **Proven usage** (`totalInvocations`) ÷ price as the tiebreaker.
 Keep the best match per need that is genuinely useful (skip weak/irrelevant hits).
-Produce a short table: need → recommended skill, price, attested quality (if any), why.
+Produce a short table: need → recommended skill, price, quality (staked rate / attested / usage), why.
 
 ### 4. Optionally queue a rental (only if enabled)
 If `scout-config.md` has `auto_invoke: true` AND a candidate's `pricePerCall` ≤
@@ -419,42 +505,47 @@ track yet: record `BOOTSTRAP: no published skills`, optionally note that
 
 ## Steps
 
-### 1. Ensure the CLI + wallet
-`command -v atrium` or install the pinned, published CLI from npm: `npm i -g @atrium-hermes/cli@0.1.0`.
-Confirm `~/.atrium/.env` has `ATRIUM_PRIVATE_KEY` (secret), `ATRIUM_NETWORK=base`,
-`ATRIUM_REGISTRY_MAINNET=0xA713c88927523279B874640003Ed697e509732a7`. If the key is
-missing, record `BOOTSTRAP: ATRIUM_PRIVATE_KEY missing`, notify, and stop.
+### 1. Report from the indexer — no key in this step
+Aeon keeps `ATRIUM_PRIVATE_KEY` **out of this (model) step**, so anything that reads
+the wallet (`atrium balance`) or spends (`atrium withdraw`) can't run inline here. Use
+the **indexer** for all reporting (no key needed); the actual sweep is queued for
+post-process. Don't look for the key here and don't fail if it's absent.
 
-### 2. Read earnings
-```bash
-atrium balance        # shows withdrawable USDC for your wallet
-```
-Also pull per-skill totals for your published skillIds from the indexer:
+### 2. Read earnings (indexer only)
+Pull per-skill totals + lifetime earned for your published skillIds from the indexer
+(`<your-address>` = the wallet on your `published.json` entries / the operator address):
 ```bash
 curl -s "https://indexer-production-92e5.up.railway.app/creators/<your-address>/earnings"
 ```
 Compute the delta vs the last entry in `earnings.json` (new invocations + new USDC
-since the previous run).
+since the previous run). Withdrawable-but-unswept balance is read in post-process
+(where the key lives) — report lifetime `totalEarned` from the indexer here.
 
-### 3. Withdraw (unless report-only)
-Let `T = ATRIUM_WITHDRAW_THRESHOLD_USDC` (default `1`). If withdrawable ≥ `T` and
-the `var` input is not `report-only`:
-```bash
-atrium withdraw --network base
+### 3. Queue the withdraw (unless report-only)
+Unless the `var` input is `report-only`, **queue** a sweep by writing
+`.pending-atrium-earnings/withdraw.json`:
+```json
+{ "network": "base", "threshold": "1" }
 ```
-Capture the tx hash. Gas on Base is sub-cent, so a low threshold is fine. On revert
-(`NothingToWithdraw`), skip silently.
+(`threshold` = `ATRIUM_WITHDRAW_THRESHOLD_USDC`, default `1`.) **Do NOT run
+`atrium withdraw` here.** `scripts/postprocess-atrium.sh` runs after the agent, reads
+the on-chain withdrawable, and — if it's ≥ `threshold` — sweeps it (gas on Base is
+sub-cent; `withdraw` no-ops on a zero balance), recording the tx to `earnings.json`.
 
 ### 4. Record + notify
-Append today's `{ date, withdrawable, withdrawnTotal, bySkill }` to
-`memory/atrium/earnings.json` and a dated line to `memory/logs/`. Notify the
-operator with: total earned to date, new USDC since last run, top-earning skill,
-and any withdrawal tx. Keep it to a few lines — this is brief material, not a wall
-of text.
+Append a dated line to `memory/logs/` and the indexer-derived report (lifetime
+`totalEarned`, new USDC since last run, `bySkill`) to your brief. The withdraw entry
+(`{ date, withdrawn, tx }`) is appended to `memory/atrium/earnings.json` by
+post-process when a sweep happens, so don't duplicate it here. Notify the operator
+with: total earned to date, new USDC since last run, top-earning skill, and a note
+that any due sweep runs in post-process. Keep it to a few lines — brief material,
+not a wall of text.
 
 ## Notes
 - Run after `atrium-publish` in a chain for a clean publish → earn → sweep loop.
 - `withdraw()` only ever sends to your own wallet; one user's revert can't block it.
+- The sweep happens in `scripts/postprocess-atrium.sh` (post-process step), where the
+  wallet key is available — same pattern as `atrium-scout` and `atrium-publish`.
 ATRIUM_SYNC_EOF_6
 mkdir -p skills/atrium-attest
 cat > skills/atrium-attest/SKILL.md <<'ATRIUM_SYNC_EOF_7'

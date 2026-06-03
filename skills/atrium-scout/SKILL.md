@@ -38,16 +38,22 @@ curl -s "https://indexer-production-92e5.up.railway.app/skills?q=<need>&sort=inv
 Collect candidates: `skillId`, `name`, `pricePerCall`, `tags`, `totalInvocations`.
 
 ### 3. Rank + recommend
-For the top few candidates per need, fetch the full record to read any **onchain
-attestation** (real quality signal):
+For the top few candidates per need, fetch the full record to read its **quality
+signals**:
 ```bash
-curl -s "https://indexer-production-92e5.up.railway.app/skills/<skillId>"   # .attestation = { successRate, sampleCount } | null
+curl -s "https://indexer-production-92e5.up.railway.app/skills/<skillId>"
+  # .stakeAttestation = { rateBps, totalStake, attestationCount }  ← STRONGEST: a stake-weighted
+  #                       success rate with $ATRIUM bonded behind it, slashable if false (sybil-resistant)
+  # .attestation      = { successRate, sampleCount } | null         ← weaker: an unbacked claim anyone can post
 ```
-Score each candidate by relevance × proven usage (`totalInvocations`) ÷ price, then
-**boost by attested success rate when present** (a skill with a high attested
-`successRate` over a real `sampleCount` outranks an unattested one at similar usage).
+Rank each candidate by relevance, then by quality in this order:
+1. **Stake-backed rate** — a high `stakeAttestation.rateBps` with real `totalStake` bonded
+   beats everything; the more $ATRIUM staked, the more trustworthy the number (it's
+   slashable). `$ATRIUM` is 18-decimal — divide `totalStake` by 1e18 for the human amount.
+2. **Plain attested** `successRate` over a real `sampleCount` (a signal, but unbacked).
+3. **Proven usage** (`totalInvocations`) ÷ price as the tiebreaker.
 Keep the best match per need that is genuinely useful (skip weak/irrelevant hits).
-Produce a short table: need → recommended skill, price, attested quality (if any), why.
+Produce a short table: need → recommended skill, price, quality (staked rate / attested / usage), why.
 
 ### 4. Optionally queue a rental (only if enabled)
 If `scout-config.md` has `auto_invoke: true` AND a candidate's `pricePerCall` ≤

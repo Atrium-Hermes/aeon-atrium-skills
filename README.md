@@ -33,24 +33,35 @@ read/write `~/.atrium/.env`. Discovery uses the public, read-only indexer API (n
 ## Spending: the post-process step (required for renting)
 
 Aeon deliberately keeps secrets **out of the Claude/model step**, so a skill cannot
-spend (`atrium invoke`) inline — the wallet key isn't there. `atrium-scout` therefore
-**queues** its top pick to `.pending-atrium/<slug>.json`, and the actual on-chain
-spend happens afterwards in **`scripts/postprocess-atrium.sh`** (Aeon auto-runs
-`scripts/postprocess-*.sh` after Claude, with full env). Two one-time setup steps:
+spend (`atrium invoke`/`publish`/`withdraw`) inline — the wallet key isn't there. Every
+spending skill therefore **queues** its intent during the model step, and the actual
+on-chain action happens afterwards in **`scripts/postprocess-atrium.sh`** (Aeon
+auto-runs `scripts/postprocess-*.sh` after Claude, with full env). One script handles
+all four queues:
+
+| Skill | Queues to | Post-process does |
+|---|---|---|
+| `atrium-scout` | `.pending-atrium/<slug>.json` | `atrium invoke` (one rental/run, honours `auto_invoke` + `max_price_usdc`) |
+| `atrium-publish` | `.pending-atrium-publish/<slug>.json` (+ staged `skill.md`) | `atrium publish` → records to `published.json` |
+| `atrium-earnings` | `.pending-atrium-earnings/withdraw.json` | `atrium withdraw` if withdrawable ≥ `threshold` → records to `earnings.json` |
+| `atrium-attest` | `.pending-atrium-attest/<id>.json` | `atrium attest` (tx-only, gas) → records to `attested.json` |
+
+Two one-time setup steps:
 
 1. **Copy the script** `scripts/postprocess-atrium.sh` (shipped in this pack) into your
    Aeon repo at the same path. It no-ops when no key is set (report-only), honours
-   `auto_invoke` + `max_price_usdc`, and rents at most one skill per run.
-2. **Wire the key into the post-process step** in `.github/workflows/aeon.yml` — add to
-   that step's `env:` (NOT the Claude step):
+   `auto_invoke` + `max_price_usdc`, rents at most one skill per run, and is safe to
+   re-run (each queue dir is drained idempotently).
+2. **Wire the secrets into the post-process step** in `.github/workflows/aeon.yml` — add
+   to that step's `env:` (NOT the Claude step):
    ```yaml
    ATRIUM_PRIVATE_KEY: ${{ secrets.ATRIUM_PRIVATE_KEY }}
-   # PINATA_JWT: ${{ secrets.PINATA_JWT }}   # also, if you publish
+   PINATA_JWT: ${{ secrets.PINATA_JWT }}   # required if you publish
    ```
 
 Then set `auto_invoke: true` in `memory/atrium/scout-config.md` once the wallet is
-funded. (`atrium-publish` / `atrium-earnings` also spend on-chain and want the same
-post-process treatment — moving their spend into post-process scripts is the same pattern.)
+funded. (`atrium-publish` and `atrium-earnings` now spend via this same post-process
+path — they only stage + queue in the model step.)
 
 ## How it composes with Aeon
 Aeon generates and evolves skills; Atrium gives them identity, a market, and a
